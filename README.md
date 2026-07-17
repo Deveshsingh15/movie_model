@@ -1,8 +1,8 @@
 # 🎬 Movie Recommendation System
 
-A **Content-Based Movie Recommendation System** built using **Python, Machine Learning, Streamlit, Pandas, Scikit-learn, and the TMDB API**.
+A **Content-Based Movie Recommendation System** built using **Python, Machine Learning, Streamlit, Pandas, Scikit-learn, OMDb, and the TMDB API**.
 
-The application recommends movies similar to a user's selected movie by analyzing movie metadata such as genres, keywords, cast, crew, and overview. Movie posters are fetched dynamically using the **TMDB API**, providing an interactive and visually appealing user experience.
+The application recommends movies similar to a user's selected movie by analyzing movie metadata such as genres, keywords, cast, crew, and overview. Movie posters are fetched dynamically from **OMDb**, with **TMDB** as an optional fallback.
 
 > **Machine Learning Project | Content-Based Recommendation Engine**
 
@@ -10,13 +10,13 @@ The application recommends movies similar to a user's selected movie by analyzin
 
 # 🌐 Live Demo
 
-**Live App:** `Add Streamlit/Railway/Render URL Here`
+**Live App:** Deploy from this repository with the Render Blueprint described below.
 
 ---
 
 # 💻 GitHub Repository
 
-**Repository:** `Add GitHub Repository Link Here`
+**Repository:** https://github.com/Deveshsingh15/movie_model
 
 ---
 
@@ -60,7 +60,7 @@ The similarity between movies is calculated using **Cosine Similarity**, allowin
 # ✨ Features
 
 - 🎬 Recommend similar movies instantly
-- 🖼 Fetch movie posters from TMDB API
+- 🖼 Fetch movie posters from OMDb or TMDB
 - 🔍 Search from thousands of movies
 - 🤖 Machine Learning recommendation engine
 - ⚡ Fast recommendation generation
@@ -79,7 +79,7 @@ The similarity between movies is calculated using **Cosine Similarity**, allowin
 | Machine Learning | Scikit-learn |
 | Data Processing | Pandas |
 | Numerical Computing | NumPy |
-| API | TMDB API |
+| Poster APIs | OMDb (primary), TMDB (optional fallback) |
 | Dataset | TMDB 5000 Movies Dataset |
 | Recommendation | Cosine Similarity |
 | Model Storage | Pickle |
@@ -93,10 +93,13 @@ The similarity between movies is calculated using **Cosine Similarity**, allowin
 movie-recommendation-system/
 │
 ├── app.py
-├── movie_list.pkl
-├── similarity.pkl
+├── recommendation_model.npz
+├── render.yaml
+├── .python-version
 ├── requirements.txt
 ├── README.md
+├── scripts/
+│   └── build_recommendation_artifact.py
 │
 ├── dataset/
 │   ├── tmdb_5000_movies.csv
@@ -143,7 +146,7 @@ The recommendation engine follows these steps:
 9. Apply stemming
 10. Convert text into vectors using CountVectorizer
 11. Calculate Cosine Similarity
-12. Save processed data using Pickle
+12. Precompute and save the top five matches in a compact NumPy artifact
 
 ---
 
@@ -189,9 +192,9 @@ When a user selects a movie:
 
 ---
 
-# 🖼 TMDB API Integration
+# 🖼 Poster API Integration
 
-Movie posters are fetched dynamically using the **TMDB API**.
+Movie posters are fetched dynamically using **OMDb**, with **TMDB** as an optional fallback.
 
 Example:
 
@@ -247,13 +250,21 @@ http://localhost:8501
 
 # 🌍 Environment Variables
 
-Create a `.env` file (optional):
+Set either environment variable before starting the app (optional):
 
 ```env
+OMDB_API_KEY=YOUR_OMDB_API_KEY
 TMDB_API_KEY=YOUR_TMDB_API_KEY
 ```
 
-Or directly add your API key inside `app.py`.
+For example, in PowerShell:
+
+```powershell
+$env:OMDB_API_KEY="YOUR_OMDB_API_KEY"
+streamlit run app.py
+```
+
+If neither key is set, the app still works and displays placeholder poster images.
 
 ---
 
@@ -334,11 +345,11 @@ Avatar
 **Output**
 
 ```
+Aliens vs Predator: Requiem
+Aliens
+Falcon Rising
+Independence Day
 Titan A.E.
-John Carter
-Guardians of the Galaxy
-The Fifth Element
-Star Trek
 ```
 
 *(Recommendations may vary depending on the trained model.)*
@@ -360,11 +371,32 @@ Star Trek
 
 # 🚀 Deployment
 
-The application can be deployed on:
+## Render
+
+The repository includes a `render.yaml` Blueprint. To deploy it:
+
+1. Push the repository to GitHub.
+2. In the [Render Dashboard](https://dashboard.render.com/), select **New > Blueprint**.
+3. Connect `Deveshsingh15/movie_model` and approve the detected service.
+4. Enter at least one poster API key when Render prompts for secret environment variables:
+   - `OMDB_API_KEY`
+   - `TMDB_API_KEY`
+5. Click **Deploy Blueprint**.
+
+Render installs the Python dependencies and starts Streamlit on Render's assigned
+`PORT`. The health check uses Streamlit's `/_stcore/health` endpoint. Future
+commits to the linked branch deploy automatically.
+
+The checked-in `recommendation_model.npz` contains only titles and the five
+precomputed matches for each movie. The much larger local pickle files are not
+required in production.
+
+## Other platforms
+
+The application can also be deployed on:
 
 - Streamlit Community Cloud
 - Railway
-- Render
 - Hugging Face Spaces
 
 ---

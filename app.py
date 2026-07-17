@@ -1,165 +1,142 @@
-import streamlit as st
-import pickle
-import requests
 import os
-import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-# -------------------- PAGE CONFIG --------------------
+import numpy as np
+import requests
+import streamlit as st
+
 
 st.set_page_config(
     page_title="Movie Recommender",
     page_icon="🎬",
-    layout="wide"
+    layout="wide",
 )
 
-# -------------------- LOAD MODEL --------------------
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "recommendation_model.npz"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(BASE_DIR, "movie_model.pkl")
+
+@st.cache_resource(show_spinner="Loading recommendation model...")
+def load_model():
+    """Load and validate the compact model artifact shipped with the app."""
+    with np.load(MODEL_PATH, allow_pickle=False) as model_data:
+        titles = model_data["titles"]
+        recommendation_indices = model_data["recommendation_indices"]
+
+    if titles.ndim != 1 or not len(titles):
+        raise ValueError("The model must contain a non-empty one-dimensional title list")
+    if recommendation_indices.shape != (len(titles), 5):
+        raise ValueError(
+            "The model must contain exactly five recommendations for every title"
+        )
+    if np.any(recommendation_indices >= len(titles)):
+        raise ValueError("The model contains an out-of-range recommendation index")
+
+    return titles, recommendation_indices
+
 
 try:
-    with open(model_path, "rb") as f:
-        data = pickle.load(f)
-
-    movies = data["movies"]
-    similarity = data["similarity"]
-
-except:
-    st.error("❌ movie_model.pkl not found or corrupted")
+    movie_titles, recommendation_indices = load_model()
+except (
+    OSError,
+    EOFError,
+    KeyError,
+    ValueError,
+) as exc:
+    st.error(
+        "Could not load the recommendation model. Make sure "
+        "`recommendation_model.npz` is in the same folder as `app.py`."
+    )
+    st.code(str(exc))
     st.stop()
 
-# -------------------- OMDB + TMDB API KEYS --------------------
-# OMDB is our primary poster source.  
-# You can get a free OMDB key from https://www.omdbapi.com/apikey.aspx.
-# We also support TMDB as a fallback if OMDB doesn't have a poster.
-# Treat blank environment variables as unset so defaults still apply.
-OMDB_API_KEY = os.getenv("OMDB_API_KEY") or "23ed64f4"  # default from user
+
+# OMDb is the primary poster source; TMDB is an optional fallback.
+OMDB_API_KEY = os.getenv("OMDB_API_KEY") or ""
 TMDB_API_KEY = os.getenv("TMDB_API_KEY") or ""
-# (API key warnings shown below; remove debug printing)
+POSTER_PLACEHOLDER = "https://placehold.co/500x750?text=No+Poster"
 
-# -------------------- FETCH POSTER FUNCTION --------------------
-# memoize OMDB/TMDB lookups to avoid hitting API limits and speed up UI.
-# include the current API keys in the cache key so that changing or adding
-# a key automatically invalidates any stale placeholder results.
-@st.cache_data(show_spinner=False)
-def fetch_poster(title: str, omdb_key: str = OMDB_API_KEY, tmdb_key: str = TMDB_API_KEY) -> str:
-    """Return a poster URL for the given movie title.
 
-    First try OMDB, then fall back to TMDB search if OMDB fails or isn't
-    configured.  If both APIs are unavailable, returns a placeholder.
-    """
-    # helper for TMDB lookup
-    def _tmdb_lookup(name):
-        try:
-            query = requests.utils.quote(name)
-            url = (
-                f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}"
-                f"&query={query}"
-            )
-            r = requests.get(url, timeout=10)
-            r.raise_for_status()
-            results = r.json().get("results") or []
-            if results:
-                path = results[0].get("poster_path")
-                if path:
-                    return f"https://image.tmdb.org/t/p/w500{path}"
-        except Exception:
-            pass
-        return None
-
-    # try OMDB first
+@st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
+def fetch_poster(
+    title: str,
+    omdb_key: str = OMDB_API_KEY,
+    tmdb_key: str = TMDB_API_KEY,
+) -> str:
+    """Return an OMDb or TMDB poster URL, falling back to a placeholder."""
     if omdb_key:
         try:
-            query = requests.utils.quote(title)
-            url = f"http://www.omdbapi.com/?apikey={OMDB_API_KEY}&t={query}"
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            poster = data.get("Poster")
+            response = requests.get(
+                "https://www.omdbapi.com/",
+                params={"apikey": omdb_key, "t": title},
+                timeout=10,
+            )
+            response.raise_for_status()
+            poster = response.json().get("Poster")
             if poster and poster != "N/A":
                 return poster
-        except Exception:
+        except (requests.RequestException, ValueError):
             pass
 
-    # OMDB failed or not configured; try TMDB if we have a key
     if tmdb_key:
-        tmdb_poster = _tmdb_lookup(title)
-        if tmdb_poster:
-            return tmdb_poster
+        try:
+            response = requests.get(
+                "https://api.themoviedb.org/3/search/movie",
+                params={"api_key": tmdb_key, "query": title},
+                timeout=10,
+            )
+            response.raise_for_status()
+            results = response.json().get("results") or []
+            if results and results[0].get("poster_path"):
+                return f"https://image.tmdb.org/t/p/w500{results[0]['poster_path']}"
+        except (requests.RequestException, ValueError):
+            pass
 
-    # ultimate fallback
-    if not omdb_key and not tmdb_key:
-        return "https://via.placeholder.com/500x750?text=No+API+Keys"
-    return "https://via.placeholder.com/500x750?text=No+Poster"
+    return POSTER_PLACEHOLDER
 
-# -------------------- RECOMMENDATION LOGIC --------------------
 
 @st.cache_data(show_spinner=False)
-def recommend(movie):
-    """Return five similar titles.
-
-    Caching avoids redoing the search on each rerun.
-    """
-    if movie not in movies["title"].values:
+def recommend(movie: str) -> list[str]:
+    """Return the five most similar movie titles."""
+    matches = np.flatnonzero(movie_titles == movie)
+    if not len(matches):
         return []
-    index = movies[movies["title"] == movie].index[0]
-    sim_row = similarity[index]
-    top_idx = np.argpartition(sim_row, -6)[-6:]
-    top_idx = top_idx[np.argsort(sim_row[top_idx])[::-1]]
-    names = []
-    for idx in top_idx[1:6]:
-        names.append(movies.iloc[idx].title)
-    return names
 
-# -------------------- UI --------------------
+    movie_position = int(matches[0])
+    return [
+        str(movie_titles[position])
+        for position in recommendation_indices[movie_position]
+    ]
 
-# custom styles for a nicer poster grid and hide default menu/footer
+
 st.markdown(
     """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    .row {display: flex; justify-content: space-around; flex-wrap: wrap;}
-    .card {box-shadow: 0 4px 8px rgba(0,0,0,0.2); transition: 0.3s; width: 18%; margin: 5px;}
-    .card:hover {box-shadow: 0 8px 16px rgba(0,0,0,0.2);}
-    .card img {width:100%;}
-    .container {padding:2px 16px; text-align:center;}
-    .container h4 {margin:5px 0; font-size:1rem;}
-    @media (max-width:768px) {.card {width:45%;}}
-    @media (max-width:480px) {.card {width:90%;}}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 st.title("🎬 Movie Recommender System")
-st.write("Select a movie and get similar movie recommendations with official posters.")
+st.write("Select a movie and get five similar recommendations with posters.")
 
-movie_list = movies["title"].values
-selected_movie = st.selectbox(
-    "Type or select a movie",
-    movie_list
-)
+movie_list = movie_titles.tolist()
+selected_movie = st.selectbox("Type or select a movie", movie_list)
 
-# clear any cached posters produced before API key was set
-st.cache_data.clear()
-
-if st.button("Show Recommendation 🚀"):
-    with st.spinner("Finding recommendations…"):
+if st.button("Show recommendations 🚀", type="primary"):
+    with st.spinner("Finding recommendations..."):
         names = recommend(selected_movie)
 
     if names:
-        # fetch poster URLs for the titles in parallel
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(fetch_poster, name) for name in names]
-            posters_list = [f.result() for f in futures]
+        with ThreadPoolExecutor(max_workers=len(names)) as executor:
+            posters = list(executor.map(fetch_poster, names))
 
-        # render in standard Streamlit columns
-        cols = st.columns(len(names))
-        for col, name, poster in zip(cols, names, posters_list):
-            with col:
-                st.image(poster, use_container_width=True)
+        for column, name, poster in zip(st.columns(len(names)), names, posters):
+            with column:
+                st.image(poster, width="stretch")
                 st.caption(name)
     else:
-        st.warning("No recommendations found ⚠️")
+        st.warning("No recommendations found.")
